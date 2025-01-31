@@ -1,96 +1,82 @@
 #!/bin/bash
-set -e
+# This script installs and configures Zabbix Agent 2 on Debian/Ubuntu systems
+# with PSK encryption, using the following parameters:
+#   - Zabbix Server: 10.4.2.24
+#   - HostMetadata: LinuxVM
+#   - TLSPSKIdentity: ZabbixAgentPSK
+# It prompts for the PSK client secret and saves it securely.
 
-# Variables
-ZABBIX_AGENT_URL="https://cdn.zabbix.com/zabbix/binaries/stable/7.0/7.0.9/zabbix_agent-7.0.9-linux-3.0-amd64-static.tar.gz"
-TMP_DIR="/tmp/zabbix_agent_install"
-DOWNLOAD_FILE="/tmp/zabbix_agent.tar.gz"
-INSTALL_BIN_DIR="/usr/local/sbin"
-CONFIG_DIR="/etc/zabbix"
-AGENT_CONFIG="${CONFIG_DIR}/zabbix_agentd.conf"
-PSK_FILE="${CONFIG_DIR}/zabbix_agentd.psk"
-SYSTEMD_SERVICE="/etc/systemd/system/zabbix-agent.service"
-
-echo "Downloading Zabbix Agent from ${ZABBIX_AGENT_URL}..."
-wget -O "${DOWNLOAD_FILE}" "${ZABBIX_AGENT_URL}"
-
-echo "Creating temporary directory ${TMP_DIR} for extraction..."
-mkdir -p "${TMP_DIR}"
-
-echo "Extracting the Zabbix Agent package..."
-tar -xzf "${DOWNLOAD_FILE}" -C "${TMP_DIR}"
-
-# Find the zabbix_agentd binary in the extracted files.
-ZABBIX_AGENT_BIN=$(find "${TMP_DIR}" -type f -name "zabbix_agentd" | head -n 1)
-if [ -z "${ZABBIX_AGENT_BIN}" ]; then
-  echo "Error: zabbix_agentd binary not found in the extracted package."
+# Ensure the script is run as root
+if [ "$EUID" -ne 0 ]; then
+  echo "Please run this script as root (or via sudo)."
   exit 1
 fi
 
-echo "Installing zabbix_agentd to ${INSTALL_BIN_DIR}..."
-cp "${ZABBIX_AGENT_BIN}" "${INSTALL_BIN_DIR}/"
-chmod +x "${INSTALL_BIN_DIR}/zabbix_agentd"
-
-echo "Ensuring configuration directory ${CONFIG_DIR} exists..."
-mkdir -p "${CONFIG_DIR}"
-
-# Prompt the user to input the PSK (in hexadecimal format)
-echo "Please enter your PSK (in hexadecimal format) for the Zabbix Agent:"
-read -sp "PSK: " USER_PSK
+# Prompt the user for the PSK client secret (hidden input)
+echo -n "Enter PSK client secret: "
+read -rs PSK_SECRET
 echo ""
-if [ -z "${USER_PSK}" ]; then
-  echo "No PSK provided. Exiting."
+
+# Download the latest Zabbix repository package for Debian 12/Ubuntu
+REPO_DEB="/tmp/zabbix-release.deb"
+wget -O "$REPO_DEB" "https://repo.zabbix.com/zabbix/7.0/debian/pool/main/z/zabbix-release/zabbix-release_latest_7.0+debian12_all.deb"
+if [ $? -ne 0 ]; then
+  echo "Error: Failed to download the Zabbix repository package."
   exit 1
 fi
 
-echo "Creating PSK file at ${PSK_FILE}..."
-echo "${USER_PSK}" > "${PSK_FILE}"
-chmod 400 "${PSK_FILE}"
+# Install the repository package
+dpkg -i "$REPO_DEB"
+if [ $? -ne 0 ]; then
+  echo "Error: Failed to install the Zabbix repository package."
+  exit 1
+fi
 
-echo "Creating Zabbix Agent configuration file at ${AGENT_CONFIG}..."
-cat > "${AGENT_CONFIG}" <<EOF
-### Zabbix Agent Configuration
+# Update package lists
+apt update
 
-# Log settings
-LogFile=/var/log/zabbix/zabbix_agentd.log
-LogFileSize=0
+# Install Zabbix Agent 2
+apt install -y zabbix-agent2
+if [ $? -ne 0 ]; then
+  echo "Error: Failed to install zabbix-agent2."
+  exit 1
+fi
 
-# Zabbix server settings
+# (Optional) Install Zabbix Agent 2 plugins if desired
+apt install -y zabbix-agent2-plugin-mongodb zabbix-agent2-plugin-mssql zabbix-agent2-plugin-postgresql
+
+# Define the configuration file location
+CONFIG_FILE="/etc/zabbix/zabbix_agent2.conf"
+
+# Backup the original configuration file
+if [ -f "$CONFIG_FILE" ]; then
+  cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
+fi
+
+# Append or override necessary configuration parameters.
+# These settings:
+#   - Point the agent to the Zabbix server for passive and active checks
+#   - Set the HostMetadata to LinuxVM
+#   - Enable PSK encryption with the specified identity and PSK file
+cat <<EOF >> "$CONFIG_FILE"
+
+# --- Custom configuration added by install_zabbix_agent.sh ---
 Server=10.4.2.24
 ServerActive=10.4.2.24
-HostnameItem=system.hostname
-
-# Host metadata for auto-registration or grouping
 HostMetadata=LinuxVM
-
-# TLS/PSK settings for secure communication
 TLSConnect=psk
 TLSAccept=psk
 TLSPSKIdentity=ZabbixAgentPSK
-TLSPSKFile=${PSK_FILE}
+TLSPSKFile=/etc/zabbix/zabbix_agent2.psk
 EOF
 
-echo "Creating systemd service file at ${SYSTEMD_SERVICE}..."
-cat > "${SYSTEMD_SERVICE}" <<EOF
-[Unit]
-Description=Zabbix Agent
-After=network.target
+# Create the PSK file with the client secret provided by the user.
+echo -n "$PSK_SECRET" > /etc/zabbix/zabbix_agent2.psk
+chmod 600 /etc/zabbix/zabbix_agent2.psk
+chown zabbix:zabbix /etc/zabbix/zabbix_agent2.psk
 
-[Service]
-Type=simple
-ExecStart=${INSTALL_BIN_DIR}/zabbix_agentd -c ${AGENT_CONFIG}
-Restart=on-failure
+# Enable the agent to start at boot and restart the service now
+systemctl enable zabbix-agent2
+systemctl restart zabbix-agent2
 
-[Install]
-WantedBy=multi-user.target
-EOF
-
-echo "Reloading systemd daemon and enabling the Zabbix Agent service..."
-systemctl daemon-reload
-systemctl enable zabbix-agent
-systemctl restart zabbix-agent
-
-echo "Cleaning up temporary files..."
-rm -rf "${TMP_DIR}" "${DOWNLOAD_FILE}"
-
-echo "Zabbix Agent installation complete."
+echo "Zabbix Agent 2 installation and configuration completed successfully."
