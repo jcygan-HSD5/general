@@ -13,9 +13,8 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Prompt the user for the PSK client secret (hidden input)
-echo -n "Enter PSK client secret: "
-read -rs PSK_SECRET
-echo ""
+read -rsp "Enter PSK client secret: " PSK_SECRET < /dev/tty
+echo
 
 # Download the latest Zabbix repository package for Debian 12/Ubuntu
 REPO_DEB="/tmp/zabbix-release.deb"
@@ -53,11 +52,17 @@ if [ -f "$CONFIG_FILE" ]; then
   cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
 fi
 
-# Append or override necessary configuration parameters.
-# These settings:
-#   - Point the agent to the Zabbix server for passive and active checks
-#   - Set the HostMetadata to LinuxVM
-#   - Enable PSK encryption with the specified identity and PSK file
+# Remove any existing lines for these keys to prevent duplicates.
+# (This assumes that lines you want to update start at the beginning of the line.)
+sed -i '/^Server=/d' "$CONFIG_FILE"
+sed -i '/^ServerActive=/d' "$CONFIG_FILE"
+sed -i '/^HostMetadata=/d' "$CONFIG_FILE"
+sed -i '/^TLSConnect=/d' "$CONFIG_FILE"
+sed -i '/^TLSAccept=/d' "$CONFIG_FILE"
+sed -i '/^TLSPSKIdentity=/d' "$CONFIG_FILE"
+sed -i '/^TLSPSKFile=/d' "$CONFIG_FILE"
+
+# Append the new configuration block
 cat <<EOF >> "$CONFIG_FILE"
 
 # --- Custom configuration added by install_zabbix_agent.sh ---
